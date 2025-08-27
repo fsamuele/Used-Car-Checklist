@@ -1,14 +1,55 @@
-Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0)
+====================================================
+Used Car Checklist - License Terms
+====================================================
+
+This repository contains two distinct components:
+1. Application Code (index.html)
+2. Checklist Content (questions_en.md)
+
+Each component is licensed under separate terms as outlined below.
+
+----------------------------------------------------
+1. LICENSE FOR THE CODE
+----------------------------------------------------
+Non-Commercial Software License
 
 Copyright © 2025 Samuele Felici (github.com/fsamuele)
 
-You are free to:
-- Share — copy and redistribute the material in any medium or format.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, merge, publish, and distribute copies of the Software for
+personal, educational, or open source purposes, subject to the following conditions:
 
-Under the following terms:
-- Attribution — You must give appropriate credit.
-- NonCommercial — You may not use the material for commercial purposes.
-- NoDerivatives — If you remix, transform, or build upon the material, you may not distribute the modified material.
-- No additional restrictions — You may not apply legal terms or technological measures that legally restrict others from doing anything the license permits.
+1. Attribution — You must give appropriate credit to the original author.
+2. Non-Commercial — Commercial use of the Software is prohibited without prior
+   written consent from the copyright holder.
+3. Distribution — Copies of this Software must retain this license text.
 
-Full license text: https://creativecommons.org/licenses/by-nc-nd/4.0/
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+----------------------------------------------------
+2. LICENSE FOR THE CHECKLIST CONTENT
+----------------------------------------------------
+Checklist Content License (Non-Commercial, No Derivatives)
+
+Copyright © 2025 Samuele Felici (github.com/fsamuele)
+
+The checklist content provided in the file `questions_en.md` is protected by copyright.
+
+You are permitted to:
+- View and use the checklist exclusively in connection with this application for
+  personal or educational purposes.
+
+You are NOT permitted to:
+- Use the checklist content for commercial purposes.
+- Copy, modify, translate, or create derivative works based on the checklist.
+- Redistribute the checklist in whole or in part without prior written consent
+  from the copyright holder.
+
+All rights reserved.
