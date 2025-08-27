@@ -1,8 +1,6 @@
 # Used-Car-Checklist
 An interactive checklist of 500+ questions to evaluate used cars.
 
-⚠️ Please note: **Code and content are under different licenses**.
-
 ## Features
 - Vehicle data input (brand, model, VIN, plate, year, color, mileage).
 - Dynamic checklist loaded from `questions_en.md`.
