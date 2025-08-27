@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Used Car Checklist</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 antialiased">
+  <div class="max-w-3xl mx-auto p-4">
+    <header class="flex items-center justify-between mb-4">
+      <h1 class="text-2xl font-semibold">Used Car Checklist</h1>
+      <div class="text-sm text-gray-500">500+ Questions to evaluate used cars</div>
+    </header>
+
+    <!-- Vehicle Data -->
+    <section class="bg-white rounded-2xl shadow p-4 mb-4">
+      <h2 class="text-lg font-medium mb-3">Vehicle information</h2>
+      <div class="grid grid-cols-2 gap-3"> 
+        <input id="name" placeholder="Model name" class="border rounded p-2 text-sm" />
+        <input id="brand" placeholder="Brand" class="border rounded p-2 text-sm" />
+        <input id="vin" placeholder="VIN" class="border rounded p-2 text-sm" />
+        <input id="plate" placeholder="Licence plate" class="border rounded p-2 text-sm" />
+  <input id="year" placeholder="Year" class="border rounded p-2 text-sm" type="number" inputmode="numeric" pattern="\d*" min="1900" max="2099" step="1" />
+        <input id="color" placeholder="Color" class="border rounded p-2 text-sm" />
+  <input id="km" placeholder="Km driven" class="border rounded p-2 text-sm" type="number" inputmode="numeric" pattern="\d*" min="0" step="1" />
+      </div>
+    </section>
+
+    <!-- Controls -->
+    <div class="flex gap-3 mb-4">
+      <button id="resetBtn" class="flex-1 px-4 py-2 bg-red-600 text-white rounded-2xl text-sm">Reset</button>
+      <button id="pdfBtn" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-2xl text-sm">Generate PDF</button>
+    </div>
+
+    <!-- Checklist -->
+    <main id="checklist" class="space-y-4"></main>
+
+    <footer class="mt-6 text-xs text-gray-500">Copyright © 2025 Samuele Felici (github.com/fsamuele)</footer>
+  </div>
+
+<script>
+/*
+  Full single-file app that:
+  - Loads `questions_en.md` from same repo via fetch
+  - Parses ## (section) and ### (subsection) headings and plain lines as questions
+  - Renders collapsible sections/subsections
+  - Allows adding custom question (+) in each subsection
+  - Each question: active checkbox (checked by default), three evaluation buttons (Ok/Usable/Not Ok), fixed-size notes
+  - Saves all answers & vehicle data to localStorage
+  - Reset clears localStorage
+  - Calculates per-section scores and overall score
+  - Generates PDF styled report with vehicle data, section scores, colored markers and notes
+*/
+
+const STORAGE_KEY = 'used_car_checklist_v1';
+let state = { vehicle: {}, sections: [] };
+
+// util: safe id
+function idSafe(s){ return s.replace(/[^a-z0-9_-]+/gi,'_'); }
+
+// fetch and init
+async function init(){
+  // load saved state if any
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved){
+    try{ state = JSON.parse(saved); }
+    catch(e){ state = { vehicle:{}, sections:[] }; }
+  }
+
+  // fetch markdown
+  try{
+    const resp = await fetch('questions_en.md');
+    if(!resp.ok) throw new Error('no md');
+    const md = await resp.text();
+    // parse md only if no sections in saved state (so user edits persist across md updates)
+    // but user requested dynamic: so always parse md and then merge saved answers where possible
+    const parsed = parseChecklist(md);
+    // merge saved values by matching section/sub/question text
+    mergeParsedWithState(parsed);
+    renderAll();
+    attachControls();
+    updateScoresUI();
+  }catch(e){
+    // fallback: if no questions_en.md or fetch blocked, render any saved state
+    if(state.sections && state.sections.length){ renderAll(); attachControls(); updateScoresUI(); }
+    else document.getElementById('checklist').innerHTML = '<div class="bg-white rounded p-4 text-sm text-gray-600">Errore: non trovo <code>questions_en.md</code> nella stessa cartella. Carica il file nella repo o metti un file con quel nome.</div>';
+  }
+}
+
+// Parse checklist markdown into structured object
+function parseChecklist(md){
+  const lines = md.split(/\r?\n/);
+  const sections = [];
+  let currentSection = null;
+  let currentSub = null;
+
+  for(const raw of lines){
+    const line = raw.trim();
+    if(!line) continue;
+    if(line.startsWith('## ')){
+      if(currentSub && currentSection) { currentSection.subs.push(currentSub); currentSub = null; }
+      if(currentSection) sections.push(currentSection);
+      currentSection = { title: line.replace(/^##\s+/, '').trim(), subs: [] };
+    }else if(line.startsWith('### ')){
+      if(!currentSection) { currentSection = { title: 'Untitled', subs: [] }; }
+      if(currentSub) currentSection.subs.push(currentSub);
+      currentSub = { title: line.replace(/^###\s+/, '').trim(), questions: [] };
+    }else if(line.startsWith('---')){
+      // ignore separator
+    }else{
+      // treat as question line
+      if(!currentSub){
+        // if there's a section but no sub, create a default sub
+        if(!currentSection) currentSection = { title: 'General', subs: [] };
+        currentSub = { title: 'General', questions: [] };
+      }
+      // some lines may be bullets - strip leading bullets
+      const q = line.replace(/^[-*+]\s*/, '').trim();
+      if(q) currentSub.questions.push(q);
+    }
+  }
+  if(currentSub && currentSection) currentSection.subs.push(currentSub);
+  if(currentSection) sections.push(currentSection);
+  return sections;
+}
+
+// Merge parsed md with saved state
+function mergeParsedWithState(parsed){
+  // build lookup of saved question answers keyed by exact question text
+  const savedQMap = new Map();
+  // also build lookup of saved sections/subs by title to persist active/collapsed
+  const savedSecMap = new Map();
+  for(const sec of state.sections || []){
+    const secKey = sec.title;
+    const secClone = { active: sec.active!==false, collapsed: !!sec.collapsed, subs: [] };
+    for(const sub of sec.subs || []){
+      secClone.subs.push({ title: sub.title, active: sub.active!==false, collapsed: !!sub.collapsed });
+      for(const q of sub.questions || []){
+        if(q && q.text) savedQMap.set(q.text, q);
+      }
+    }
+    savedSecMap.set(secKey, secClone);
+  }
+
+  const merged = [];
+  parsed.forEach(sec=>{
+    const savedSec = savedSecMap.get(sec.title);
+  // default collapsed -> true so on first run (or after reset) sections start collapsed
+  const ms = { title: sec.title, subs: [] , active: savedSec ? savedSec.active : true, collapsed: savedSec ? savedSec.collapsed : true };
+    sec.subs.forEach(sub=>{
+      const savedSub = (savedSec && savedSec.subs) ? savedSec.subs.find(s=>s.title===sub.title) : null;
+  // default collapsed -> true so subsections start collapsed by default
+  const msub = { title: sub.title, questions: [], active: savedSub ? savedSub.active : true, collapsed: savedSub ? savedSub.collapsed : true };
+      sub.questions.forEach(qtext=>{
+        const saved = savedQMap.get(qtext);
+        if(saved){
+          // keep saved question state
+          msub.questions.push({ text: qtext, active: saved.active ?? true, value: saved.value ?? null, note: saved.note ?? '', _custom: saved._custom || false });
+        }else{
+          msub.questions.push({ text: qtext, active: true, value: null, note: '', _custom: false });
+        }
+      });
+      ms.subs.push(msub);
+    });
+    merged.push(ms);
+  });
+
+  // if state had custom questions (user-added) that are not in parsed MD, re-attach them to matching subsection by title
+  const leftover = [];
+  if(state.sections){
+    state.sections.forEach(sec=>{
+      sec.subs && sec.subs.forEach(sub=>{
+        sub.questions && sub.questions.forEach(q=>{
+          // if q.text not in merged, store to reattach
+          const exists = merged.some(ms=>ms.subs.some(msub=>msub.questions.some(mq=>mq.text===q.text)));
+          if(!exists && q._custom){ leftover.push({secTitle: sec.title, subTitle: sub.title, q}); }
+        });
+      });
+    });
+  }
+  leftover.forEach(item=>{
+    const targetSec = merged.find(s=>s.title===item.secTitle) || merged[0];
+    if(targetSec){
+      const targetSub = targetSec.subs.find(s=>s.title===item.subTitle) || targetSec.subs[0];
+      if(targetSub) targetSub.questions.unshift(item.q);
+    }
+  });
+
+  state.sections = merged;
+}
+
+// Render entire app
+function renderAll(){
+  const root = document.getElementById('checklist');
+  root.innerHTML = '';
+
+  state.sections.forEach((sec, si)=>{
+    const secEl = document.createElement('section');
+    secEl.className = 'bg-white rounded-2xl shadow overflow-hidden';
+
+    const secHeader = document.createElement('button');
+    secHeader.type = 'button';
+    secHeader.className = 'w-full text-left px-4 py-3 flex items-center justify-between';
+    // secHeader.innerHTML = `<span class='font-semibold'>${sec.title}</span><span id='sec-score-${si}' class='text-sm text-gray-500'></span>`;
+    secHeader.innerHTML = `
+  <div class='flex items-center gap-2'>
+    <input type='checkbox' ${sec.active !== false ? "checked":""} onchange='toggleSection(${si},this.checked)' />
+    <span class='font-semibold'>${sec.title}</span>
+    <span id='sec-score-${si}' class='text-sm text-gray-500'></span>
+  </div>`;
+      // if section is inactive, ensure body is collapsed and header is not toggleable
+      const secBodyId = `sec-body-${si}`;
+      const secBodyEl = secBodyId ? null : null; // placeholder
+      secHeader.onclick = (e)=>{
+        // toggle only if section active
+        if(sec.active === false) return;
+        const el = document.getElementById(secBodyId);
+        if(!el) return;
+        el.classList.toggle('hidden');
+        // persist collapsed state
+        sec.collapsed = el.classList.contains('hidden');
+        saveState();
+      };
+
+    const secBody = document.createElement('div');
+    secBody.id = `sec-body-${si}`;
+    secBody.className = 'p-3 space-y-3';
+
+    // subsections
+    sec.subs.forEach((sub, subi)=>{
+      const subWrap = document.createElement('div');
+      subWrap.className = 'border rounded-lg p-2';
+
+      const subHeader = document.createElement('div');
+      subHeader.className = 'flex items-center justify-between';
+      // Nome sottosezione come bottone cliccabile
+      const subNameBtn = document.createElement('button');
+      subNameBtn.type = 'button';
+      subNameBtn.className = 'font-semibold text-left bg-transparent border-none cursor-pointer px-0';
+      subNameBtn.textContent = sub.title;
+      subNameBtn.onclick = ()=>{
+        // allow toggle only if subsection is active and parent section active
+        if(sub.active === false || sec.active === false) return;
+        const qList = document.getElementById(`sub-body-${si}-${subi}`);
+        if(qList) {
+          qList.classList.toggle('hidden');
+          // persist collapsed state
+          sub.collapsed = qList.classList.contains('hidden');
+          saveState();
+        }
+      };
+
+      // Checkbox attivo/disattivo sottosezione
+  const subActive = document.createElement('input');
+  subActive.type = 'checkbox';
+  subActive.checked = sub.active !== false;
+  subActive.onchange = function(){ toggleSubsection(si,subi,this.checked); };
+
+      // Score
+      const subScore = document.createElement('span');
+      subScore.id = `sub-score-${si}-${subi}`;
+      subScore.className = 'text-sm text-gray-500';
+
+      // Header layout
+      const headerRow = document.createElement('div');
+      headerRow.className = 'flex items-center gap-2';
+      headerRow.appendChild(subActive);
+      headerRow.appendChild(subNameBtn);
+      headerRow.appendChild(subScore);
+      subHeader.appendChild(headerRow);
+
+      // Bottone aggiungi domanda
+      const addBtn = document.createElement('button');
+      addBtn.className = 'ml-2 text-sm text-blue-600';
+      addBtn.textContent = '+ Add question';
+      addBtn.onclick = ()=>{ const q = prompt('Testo nuova domanda'); if(q){ addCustomQuestion(si,subi,q); }};
+      subHeader.appendChild(addBtn);
+
+  const qList = document.createElement('div');
+  qList.id = `sub-body-${si}-${subi}`;
+  qList.className = 'mt-2 space-y-2';
+  qList.style.maxHeight = 'none';
+  // apply collapsed state from model
+  if(sub.collapsed) qList.classList.add('hidden');
+
+      sub.questions.forEach((q, qi)=>{
+        qList.appendChild(renderQuestionNode(q, si, subi, qi));
+      });
+
+      // if subsection inactive, ensure collapsed and disable add button
+      if(sub.active === false){
+        qList.classList.add('hidden');
+        addBtn.disabled = true; addBtn.classList.add('opacity-40','cursor-not-allowed');
+      }
+
+      subWrap.appendChild(subHeader);
+      subWrap.appendChild(qList);
+      secBody.appendChild(subWrap);
+    });
+
+  // apply collapsed state to section body
+  if(sec.collapsed) secBody.classList.add('hidden');
+
+  secEl.appendChild(secHeader);
+  secEl.appendChild(secBody);
+    root.appendChild(secEl);
+  });
+
+  // populate vehicle fields from state
+  ['name','brand','vin','plate','year','color','km'].forEach(k=>{
+    const el = document.getElementById(k);
+    if(el){ el.value = state.vehicle[k] || ''; el.oninput = ()=>{ state.vehicle[k]=el.value; saveState(); }}
+  });
+
+  // attach input listeners
+  document.querySelectorAll('[data-q-id]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{ saveState(); updateScoresUI(); });
+  });
+}
+function toggleSection(si, checked){
+  const section = state.sections[si];
+  section.active = checked;
+  // when deactivating, collapse the section; when activating, keep previous collapsed if any
+  if(!checked){ section.collapsed = true; }
+  else { section.collapsed = section.collapsed || false; }
+  // Aggiorna tutte le domande delle sottosezioni and their active flags
+  section.subs.forEach(sub => {
+    sub.active = checked;
+    // if parent deactivated, also collapse subsections
+    if(!checked) sub.collapsed = true;
+    sub.questions.forEach(q => { q.active = checked; });
+  });
+  saveState(); updateScoresUI(); renderAll();
+}
+function toggleSubsection(si, subi, checked){
+  const sub = state.sections[si].subs[subi];
+  sub.active = checked;
+  // when deactivating, collapse the subsection
+  if(!checked) sub.collapsed = true;
+  else sub.collapsed = sub.collapsed || false;
+  sub.questions.forEach(q => { q.active = checked; });
+  saveState(); updateScoresUI(); renderAll();
+}
+function renderQuestionNode(q, si, subi, qi){
+  const wrapper = document.createElement('div');
+  const qobj = (typeof q === 'string') ? { text: q, active: true, value: null, note:'', _custom:false } : (q._custom===undefined?{...q, _custom:false}:q);
+  wrapper.className = 'bg-gray-50 rounded p-2';
+  const qid = `q_${idSafe(si+'_'+subi+'_'+qi)}_${Math.abs(hashCode(q.text||q))}`;
+
+  // build innerHTML con classi e attributi condizionali
+  const textClass = qobj.active ? 'text-sm' : 'text-sm line-through text-gray-400';
+  const btnDisabled = qobj.active ? '' : 'disabled';
+  const btnClass = 'px-2 py-1 rounded text-sm border';
+  const taDisabled = qobj.active ? '' : 'disabled';
+  wrapper.innerHTML = `
+    <div class='flex items-start gap-2'>
+      <input data-q-id type='checkbox' id='${qid}_active' ${qobj.active? 'checked':''} class='mt-1' />
+      <div class='flex-1'>
+        <div class='${textClass}'>${escapeHtml(qobj.text)}</div>
+        <div class='flex gap-2 mt-2'>
+          <button type='button' data-role='eval' data-val='1' class='${btnClass}' ${btnDisabled}>Ok</button>
+          <button type='button' data-role='eval' data-val='0.5' class='${btnClass}' ${btnDisabled}>Usable</button>
+          <button type='button' data-role='eval' data-val='0' class='${btnClass}' ${btnDisabled}>Not Ok</button>
+        </div>
+  <textarea id='${qid}_note' placeholder='Note' class='w-full mt-2 p-2 text-sm border rounded' rows='1' ${taDisabled}>${escapeHtml(qobj.note||'')}</textarea>
+      </div>
+    </div>
+  `;
+
+  // set evaluation visual based on value
+  const buttons = wrapper.querySelectorAll('[data-role="eval"]');
+  buttons.forEach(b=>{
+    b.onclick = ()=>{
+      const val = parseFloat(b.getAttribute('data-val'));
+      // update state model
+      const sec = state.sections[si];
+      const sub = sec.subs[subi];
+      // find index by question text (avoid duplicates by matching text or custom flag)
+      const qIndex = sub.questions.findIndex(x => (x.text||x) === (qobj.text||q));
+      if(qIndex>=0){ sub.questions[qIndex].value = val; sub.questions[qIndex].active = document.getElementById(qid+'_active').checked; sub.questions[qIndex].note = document.getElementById(qid+'_note').value; sub.questions[qIndex]._custom = qobj._custom || false; }
+      saveState(); updateScoresUI(); highlightEval(buttons, val);
+    };
+  });
+
+  // init highlight according to existing value
+  const sec = state.sections[si];
+  const sub = sec.subs[subi];
+  const savedQ = sub.questions[qi];
+  if(savedQ && savedQ.value !== null && savedQ.value !== undefined){ highlightEval(buttons, savedQ.value); }
+
+  // note change
+  wrapper.querySelector(`#${qid}_note`).addEventListener('input', ()=>{
+    const sec = state.sections[si];
+    const sub = sec.subs[subi];
+    const qIndex = sub.questions.findIndex(x => (x.text||x) === (qobj.text||q));
+    if(qIndex>=0){ sub.questions[qIndex].note = document.getElementById(qid+'_note').value; saveState(); }
+  });
+
+  // active toggle
+  wrapper.querySelector(`#${qid}_active`).addEventListener('change', ()=>{
+    const sec = state.sections[si];
+    const sub = sec.subs[subi];
+    const qIndex = sub.questions.findIndex(x => (x.text||x) === (qobj.text||q));
+    if(qIndex>=0){
+      sub.questions[qIndex].active = document.getElementById(qid+'_active').checked;
+      saveState();
+      updateScoresUI();
+      renderAll(); // forza il re-render della checklist per aggiornare le classi
+    }
+  });
+
+  return wrapper;
+}
+
+function highlightEval(buttons, val){
+  buttons.forEach(b=>{
+    const v = parseFloat(b.getAttribute('data-val'));
+    b.classList.remove('ring','ring-offset-2','bg-green-100','bg-yellow-100','bg-red-100');
+    if(v === val){
+      if(v===1) b.classList.add('bg-green-100');
+      else if(v===0.5) b.classList.add('bg-yellow-100');
+      else b.classList.add('bg-red-100');
+    }
+  });
+}
+
+function addCustomQuestion(si, subi, text){
+  const sec = state.sections[si];
+  const sub = sec.subs[subi];
+  const qobj = { text, active: true, value: null, note:'', _custom:true };
+  sub.questions.unshift(qobj);
+  saveState();
+  renderAll();
+  updateScoresUI();
+}
+
+// persistence
+function saveState(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  catch(e){ console.error('save failed',e); }
+}
+
+// attach reset and pdf
+function attachControls(){
+  document.getElementById('resetBtn').onclick = ()=>{
+    if(confirm('Sicuro di voler resettare tutto?')){ localStorage.removeItem(STORAGE_KEY); location.reload(); }
+  };
+  document.getElementById('pdfBtn').onclick = generatePDF;
+}
+
+// scores
+function updateScoresUI(){
+  const secScores = [];
+  state.sections.forEach((sec, si)=>{
+    let sum = 0, cnt = 0;
+    sec.subs.forEach(sub=>{
+      sub.questions.forEach(q=>{
+        if(q.active){ cnt++; sum += (q.value!==null && q.value!==undefined) ? Number(q.value) : 0; }
+      });
+    });
+    const avg = cnt? (sum/cnt) : 0;
+    const score10 = cnt? (avg*10) : 0; // in decimi 0..10
+    const scoreStr = cnt? (score10.toFixed(1) + '/10') : '-';
+    const el = document.getElementById(`sec-score-${si}`);
+    if(el) el.textContent = scoreStr;
+    secScores.push(cnt? Number(score10.toFixed(1)) : null);
+  });
+
+  // overall: average of section scores (ignoring sections with null)
+  const valid = secScores.filter(s=>s!==null);
+  const total = valid.length ? (valid.reduce((a,b)=>a+b,0)/valid.length) : 0;
+  // show total near top (we'll show in an ephemeral small area)
+  let totalEl = document.getElementById('total-score-display');
+  if(!totalEl){
+    totalEl = document.createElement('div');
+    totalEl.id = 'total-score-display';
+    totalEl.className = 'fixed bottom-4 right-4 bg-white border rounded-full px-3 py-2 shadow text-sm flex items-center gap-2';
+
+    const span = document.createElement('span');
+    span.id = 'total-score-text';
+    span.textContent = 'Total: -';
+
+    const btn = document.createElement('button');
+    btn.id = 'btn-scroll-top';
+    btn.type = 'button';
+    btn.title = 'Vai su';
+    btn.className = 'bg-blue-600 text-white text-xs rounded-full px-2 py-1';
+    btn.textContent = '↑';
+    btn.onclick = ()=> window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    totalEl.appendChild(span);
+    totalEl.appendChild(btn);
+    document.body.appendChild(totalEl);
+  }
+  const span = document.getElementById('total-score-text');
+  if(span) span.textContent = valid.length ? `Total: ${total.toFixed(1)}/10` : 'Total: -';
+
+  saveState();
+}
+
+// PDF generation
+function generatePDF(){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const left = 40; let y = 40; const lineHeight = 14; const pageHeight = 820;
+
+  // header - vehicle data
+  doc.setFontSize(18); doc.text('Used Car Checklist', left, y); y+=24;
+  doc.setFontSize(12);
+  const vehicleFields = ['name','brand','vin','plate','year','color','km'];
+  vehicleFields.forEach(f=>{ const v = document.getElementById(f)?.value || ''; doc.text(`${capitalize(f)}: ${v}`, left, y); y+=lineHeight; });
+
+  // total score prominently - read only the text span to avoid including button glyphs
+  const totalSpan = document.getElementById('total-score-text');
+  const totalTextRaw = totalSpan ? totalSpan.textContent : '';
+  const totalText = totalTextRaw.replace(/^Total:\s*/,'').trim();
+  doc.setFontSize(22); doc.text(totalText, 420, 60, { align: 'right' });
+  y += 6;
+
+  // iterate sections
+  state.sections.forEach((sec, si)=>{
+    if(sec.active === false) return; // Salta sezione disattivata
+    if(y > pageHeight){ doc.addPage(); y=40; }
+    // section header with score
+    const secScoreEl = document.getElementById(`sec-score-${si}`);
+    const secScore = secScoreEl ? secScoreEl.textContent : '-';
+    doc.setFontSize(14); doc.setTextColor(34,34,34); doc.text(`${sec.title}  (${secScore})`, left, y); y+=lineHeight;
+
+    sec.subs.forEach(sub=>{
+      if(sub.active === false) return; // Salta sottosezione disattivata
+      if(y > pageHeight){ doc.addPage(); y=40; }
+      doc.setFontSize(12); doc.setTextColor(0,0,0); doc.text(sub.title, left+8, y); y+=lineHeight;
+
+      sub.questions.forEach(q=>{
+        if(q.active){
+          if(y > pageHeight-40){ doc.addPage(); y=40; }
+          // colored marker based on value
+          let label = '';
+          if(q.value === 1) { label='Ok'; doc.setTextColor(20,150,20); }
+          else if(q.value === 0.5){ label='Usable'; doc.setTextColor(200,140,20); }
+          else { label='Not Ok'; doc.setTextColor(180,30,30); }
+          doc.setFontSize(10);
+          const qText = `- ${q.text} [${label}]`;
+            const lines = doc.splitTextToSize(qText, 470);
+            doc.text(lines, left+16, y);
+            y += lines.length * lineHeight + 2;
+
+            // note
+            if(q.note && q.note.trim()){
+            doc.setTextColor(80,80,80); doc.setFontSize(10);
+            const noteText = `Note: ${q.note}`;
+            const noteLines = doc.splitTextToSize(noteText, 440);
+            doc.text(noteLines, left+28, y);
+            y += noteLines.length * lineHeight + 4;
+            doc.setTextColor(0,0,0);
+            }
+        }
+      });
+    });
+    y+=6;
+  });
+
+  doc.save('used-car-checklist.pdf');
+}
+
+// small helpers
+function splitTextToDoc(doc, text, x, y, maxWidth, lh){
+  const lines = doc.splitTextToSize(text, maxWidth);
+  doc.text(lines, x, y);
+}
+function capitalize(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
+function escapeHtml(s){ return (s||'').replace(/[&<>\"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":"&#39;" })[c]); }
+function hashCode(str){ let h=0; for(let i=0;i<str.length;i++){ h = ((h<<5)-h)+str.charCodeAt(i); h |= 0; } return h; }
+
+// start
+init();
+
+</script>
+</body>
+</html>
